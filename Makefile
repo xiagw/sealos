@@ -1,6 +1,16 @@
 Dirs=$(shell ls)
 COMMIT_ID ?= $(shell git rev-parse --short HEAD || echo "0.0.0")
 
+# only support linux
+OS=linux
+UNAME_S := $(shell uname -s)
+ifeq ($(UNAME_S),Darwin)
+CGO_ENABLED=0
+endif
+ifeq ($(UNAME_S),Linux)
+CGO_ENABLED=1
+endif
+
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifneq (,$(shell go env GOBIN))
 GOBIN=$(shell go env GOPATH)/bin
@@ -8,37 +18,63 @@ else
 GOBIN=$(shell go env GOBIN)
 endif
 
-install-golint: ## check license if not exist install addlicense tools
-ifeq (, $(shell which golangci-lint))
-	@{ \
-	set -e ;\
-	o install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.39.0 ;\
-	}
-GOLINT_BIN=$(GOBIN)/golangci-lint
-else
-GOLINT_BIN=$(shell which golangci-lint)
-endif
+SHELL = /usr/bin/env bash -o pipefail
+.SHELLFLAGS = -ec
+
+# go-get-tool will 'go get' any package $2 and install it to $1.
+PROJECT_DIR := $(shell dirname $(abspath $(lastword $(MAKEFILE_LIST))))
+define go-get-tool
+@[ -f $(1) ] || { \
+set -e ;\
+TMP_DIR=$$(mktemp -d) ;\
+cd $$TMP_DIR ;\
+go mod init tmp ;\
+echo "Downloading $(2)" ;\
+GOBIN=$(PROJECT_DIR)/bin go install $(2) ;\
+rm -rf $$TMP_DIR ;\
+}
+endef
+
+
+GOLINT_BIN = $(shell pwd)/bin/golangci-lint
+install-golint: ## check license if not exist install go-lint tools
+	$(call go-get-tool,$(GOLINT_BIN),github.com/golangci/golangci-lint/cmd/golangci-lint@v1.39.0)
 
 lint: install-golint ## Run go lint against code.
-	$(GOLINT_BIN) run -v ./...
+	$(GOLINT_BIN) run --build-tags=musl -c .golangci.yml -v ./...
 
 default:  build
 
-install-goreleaser: ## check license if not exist install addlicense tools
-ifeq (, $(shell which goreleaser))
-	@{ \
-	set -e ;\
-	go install github.com/goreleaser/goreleaser@latest ;\
-	}
-GORELEASER_BIN=$(GOBIN)/goreleaser
-else
-GORELEASER_BIN=$(shell which goreleaser)
-endif
+build: build-amd64  build-arm64
 
-build: SHELL:=/bin/bash
-build: install-goreleaser clean ## build binaries by default
+build-amd64:
+	CGO_ENABLED=${CGO_ENABLED} GOOS=${OS} GOARCH=amd64 go build  -o $(shell pwd)/bin/${OS}_amd64/sealos -tags "containers_image_openpgp" cmd/sealos/main.go
+	CGO_ENABLED=0 GOOS=${OS} GOARCH=amd64 go build  -o $(shell pwd)/bin/${OS}_amd64/seactl -tags "containers_image_openpgp" cmd/sealctl/main.go
+
+build-arm64:
+	CGO_ENABLED=${CGO_ENABLED} GOOS=${OS} GOARCH=arm64 go build  -o $(shell pwd)/bin/${OS}_arm64/sealos -tags "containers_image_openpgp" cmd/sealos/main.go
+	CGO_ENABLED=0 GOOS=${OS} GOARCH=arm64 go build  -o $(shell pwd)/bin/${OS}_arm64/seactl -tags "containers_image_openpgp" cmd/sealctl/main.go
+
+import:
+	goimports -l -w cmd
+	goimports -l -w pkg
+
+GORELEASER_BIN = $(shell pwd)/bin/goreleaser
+install-goreleaser: ## check license if not exist install go-lint tools
+	#goimports -l -w cmd
+	#goimports -l -w pkg
+	$(call go-get-tool,$(GORELEASER_BIN),github.com/goreleaser/goreleaser@v1.6.3)
+
+build-pack: SHELL:=/bin/bash
+build-pack: install-goreleaser clean ## build binaries by default
 	@echo "build sealos bin"
 	$(GORELEASER_BIN) build --snapshot --rm-dist  --timeout=1h
+
+build-release: SHELL:=/bin/bash
+build-release: install-goreleaser clean ## build binaries by default
+	@echo "build sealos bin"
+	$(GORELEASER_BIN) release --timeout=1h  --release-notes=hack/release/Note.md
+
 
 help: ## this help
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {sub("\\\\n",sprintf("\n%22c"," "), $$2);printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -46,44 +82,42 @@ help: ## this help
 clean: ## clean
 	rm -rf dist
 
-install-addlicense: ## check license if not exist install addlicense tools
-ifeq (, $(shell which addlicense))
-	@{ \
-	set -e ;\
-	LICENSE_TMP_DIR=$$(mktemp -d) ;\
-	cd $$LICENSE_TMP_DIR ;\
-	go mod init tmp ;\
-	go get -v github.com/google/addlicense ;\
-	rm -rf $$LICENSE_TMP_DIR ;\
-	}
-ADDLICENSE_BIN=$(GOBIN)/addlicense
-else
-ADDLICENSE_BIN=$(shell which addlicense)
-endif
+ADDLICENSE_BIN = $(shell pwd)/bin/addlicense
+install-addlicense: ## check license if not exist install go-lint tools
+	$(call go-get-tool,$(ADDLICENSE_BIN),github.com/google/addlicense@latest)
 
-
-filelicense: SHELL:=/bin/bash
-filelicense: ## add license
+filelicense:
+filelicense: install-addlicense
 	for file in ${Dirs} ; do \
-		if [[  $$file != '_output' && $$file != 'docs' && $$file != 'vendor' && $$file != 'logger' && $$file != 'applications' ]]; then \
+		if [[  $$file != '_output' && $$file != 'docs' && $$file != 'vendor' && $$file != 'logger' && $$file != 'fork' && $$file != 'applications' ]]; then \
 			$(ADDLICENSE_BIN)  -y $(shell date +"%Y") -c "sealos." -f hack/template/LICENSE ./$$file ; \
 		fi \
     done
 
-install-ossutil: ## check ossutil if not exist install ossutil tools
-ifeq (, $(shell which ossutil))
-	@{ \
-	set -e ;\
-	curl -sfL https://raw.githubusercontent.com/securego/gosec/master/install.sh | sh -s -- -b $(GOBIN) v2.2.0 ;\
-	}
-OSSUTIL_BIN=$(GOBIN)/ossutil
-else
-OSSUTIL_BIN=$(shell which ossutil)
-endif
+OSSUTIL_BIN = $(shell pwd)/bin/ossutil
+install-ossutil: ## check license if not exist install go-lint tools
+	$(call go-get-tool,$(OSSUTIL_BIN),github.com/aliyun/ossutil@latest)
+
 
 push-oss:install-ossutil build
-	$(OSSUTIL_BIN) cp -f dist/sealos_linux_amd64/sealos oss://sealyun-temp/sealos/${COMMIT_ID}/sealos
+	$(OSSUTIL_BIN) cp -f dist/sealos_linux_amd64/sealos oss://sealyun-temp/sealos/${COMMIT_ID}/sealos-amd64
 	$(OSSUTIL_BIN) cp -f dist/sealos_linux_arm64/sealos oss://sealyun-temp/sealos/${COMMIT_ID}/sealos-arm64
+	$(OSSUTIL_BIN) cp -f dist/sealctl_linux_amd64/sealctl oss://sealyun-temp/sealos/${COMMIT_ID}/sealctl-amd64
+	$(OSSUTIL_BIN) cp -f dist/sealctl_linux_arm64/sealctl oss://sealyun-temp/sealos/${COMMIT_ID}/sealctl-arm64
 
 generator-contributors:
 	git log --format='%aN <%aE>' | sort -uf > CONTRIBUTORS
+
+
+DEEPCOPY_BIN = $(shell pwd)/bin/deepcopy-gen
+install-deepcopy: ## check license if not exist install go-lint tools
+	$(call go-get-tool,$(DEEPCOPY_BIN),k8s.io/code-generator/cmd/deepcopy-gen@latest)
+
+HEAD_FILE := hack/template/boilerplate.go.txt
+INPUT_DIR := github.com/labring/sealos/pkg/types/v1beta1
+deepcopy:install-deepcopy
+	$(DEEPCOPY_BIN) \
+      --input-dirs="$(INPUT_DIR)" \
+      -O zz_generated.deepcopy   \
+      --go-header-file "$(HEAD_FILE)" \
+      --output-base "${GOPATH}/src"

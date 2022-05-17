@@ -8,6 +8,7 @@ run:
   # default is true. Enables skipping of directories:
   #   vendor$, third_party$, testdata$, examples$, Godeps$, builtin$
   skip-dirs-use-default: true
+  modules-download-mode: vendor
 
 linters:
   # please, do not use `enable-all`: it's deprecated and will be removed soon.
@@ -16,7 +17,7 @@ linters:
   enable:
     - gofmt
     - goimports
-    - golint
+    - revive
     - stylecheck
     - goconst
     - gosimple
@@ -33,7 +34,6 @@ linters:
     - unused
     - varcheck
     - nilerr
-    - unparam
     - ifshort
     - unconvert
 
